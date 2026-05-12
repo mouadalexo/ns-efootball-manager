@@ -1,26 +1,35 @@
 const { db } = require('../utils/database');
 const { requireManager } = require('../utils/permissions');
-const { successEmbed, errorEmbed, warningEmbed } = require('../utils/embeds');
-const { buildPendingMatchesSelect, buildResultModal, buildResultEmbed } = require('../panels/resultsPanel');
+const { successEmbed, errorEmbed, warningEmbed, E } = require('../utils/embeds');
+const { buildPendingMatchesSelect, buildResultModal, buildAllResultsEmbed } = require('../panels/resultsPanel');
 const { buildTournamentSelectMenu } = require('../panels/tournamentPanel');
-const { buildGroupStandingsEmbed } = require('../panels/standingsPanel');
+const { buildGroupStandingsEmbed, buildStandingsRow } = require('../panels/standingsPanel');
 const { getTargetChannel } = require('../utils/channelRouter');
 
 async function handleResultInteraction(interaction, client) {
   const id = interaction.customId;
 
+  // ── View All Results button (ephemeral) ────────────────────────────────────
+  if (id.startsWith('view_results_')) {
+    const tournamentId = parseInt(id.replace('view_results_', ''));
+    const embed = buildAllResultsEmbed(tournamentId);
+    if (!embed) return interaction.reply({ embeds: [warningEmbed('No Results', 'No results recorded yet.')], ephemeral: true });
+    return interaction.reply({ embeds: [embed], ephemeral: true });
+  }
+
+  // ── Select tournament to add result ───────────────────────────────────────
   if (id === 'tournament_results') {
     if (!requireManager(interaction.member)) return noPermission(interaction);
     const menu = buildTournamentSelectMenu('Select a tournament to add result...', 'result_tournament_select');
     if (!menu) return interaction.reply({ embeds: [warningEmbed('No Tournaments', 'No active tournaments found.')], ephemeral: true });
-    return interaction.reply({ content: '📊 Select a tournament:', components: [menu], ephemeral: true });
+    return interaction.reply({ content: `${E.cup}  Select a tournament:`, components: [menu], ephemeral: true });
   }
 
   if (id === 'result_tournament_select') {
     const tournamentId = parseInt(interaction.values[0]);
     const matchMenu = buildPendingMatchesSelect(tournamentId);
-    if (!matchMenu) return interaction.update({ content: '✅ No pending matches in this tournament.', components: [] });
-    return interaction.update({ content: '⚽ Select a match:', components: [matchMenu] });
+    if (!matchMenu) return interaction.update({ content: '✅  No pending matches in this tournament.', components: [] });
+    return interaction.update({ content: `${E.arrow}  Select a match:`, components: [matchMenu] });
   }
 
   if (id.startsWith('match_select_')) {
@@ -28,9 +37,11 @@ async function handleResultInteraction(interaction, client) {
     return interaction.showModal(buildResultModal(matchId));
   }
 
+  // ── Submit result modal ────────────────────────────────────────────────────
   if (id.startsWith('result_modal_')) {
     if (!requireManager(interaction.member)) return noPermission(interaction);
-    const matchId = parseInt(id.replace('result_modal_', ''));
+
+    const matchId   = parseInt(id.replace('result_modal_', ''));
     const homeScore = parseInt(interaction.fields.getTextInputValue('home_score'));
     const awayScore = parseInt(interaction.fields.getTextInputValue('away_score'));
 
@@ -42,55 +53,64 @@ async function handleResultInteraction(interaction, client) {
     if (!match) return interaction.reply({ embeds: [errorEmbed('Not Found', 'Match not found.')], ephemeral: true });
 
     const tournament = db.findById('tournaments', match.tournament_id);
-    db.update('matches', matchId, { home_score: homeScore, away_score: awayScore, status: 'played', played_at: new Date().toISOString() });
 
+    db.update('matches', matchId, {
+      home_score: homeScore,
+      away_score: awayScore,
+      status: 'played',
+      played_at: new Date().toISOString(),
+    });
+
+    // Update tournament_teams standings
     if (match.stage === 'group') {
       const homeWon = homeScore > awayScore;
       const awayWon = awayScore > homeScore;
-      const draw = homeScore === awayScore;
+      const draw    = homeScore === awayScore;
 
-      const homeTT = db.findOne('tournament_teams', tt => tt.tournament_id === match.tournament_id && tt.team_id === match.home_team_id);
-      const awayTT = db.findOne('tournament_teams', tt => tt.tournament_id === match.tournament_id && tt.team_id === match.away_team_id);
+      for (const [teamId, scored, conceded, won, lost] of [
+        [match.home_team_id, homeScore, awayScore, homeWon, awayWon],
+        [match.away_team_id, awayScore, homeScore, awayWon, homeWon],
+      ]) {
+        const tt = db.findOne('tournament_teams', r => r.tournament_id === match.tournament_id && r.team_id === teamId);
+        if (tt) db.update('tournament_teams', tt.id, {
+          goals_for:     (tt.goals_for     || 0) + scored,
+          goals_against: (tt.goals_against || 0) + conceded,
+          wins:          (tt.wins          || 0) + (won  ? 1 : 0),
+          draws:         (tt.draws         || 0) + (draw ? 1 : 0),
+          losses:        (tt.losses        || 0) + (lost ? 1 : 0),
+          points:        (tt.points        || 0) + (won ? 3 : draw ? 1 : 0),
+        });
+      }
 
-      if (homeTT) db.update('tournament_teams', homeTT.id, {
-        goals_for: (homeTT.goals_for || 0) + homeScore,
-        goals_against: (homeTT.goals_against || 0) + awayScore,
-        wins: (homeTT.wins || 0) + (homeWon ? 1 : 0),
-        draws: (homeTT.draws || 0) + (draw ? 1 : 0),
-        losses: (homeTT.losses || 0) + (awayWon ? 1 : 0),
-        points: (homeTT.points || 0) + (homeWon ? 3 : draw ? 1 : 0),
-      });
-      if (awayTT) db.update('tournament_teams', awayTT.id, {
-        goals_for: (awayTT.goals_for || 0) + awayScore,
-        goals_against: (awayTT.goals_against || 0) + homeScore,
-        wins: (awayTT.wins || 0) + (awayWon ? 1 : 0),
-        draws: (awayTT.draws || 0) + (draw ? 1 : 0),
-        losses: (awayTT.losses || 0) + (homeWon ? 1 : 0),
-        points: (awayTT.points || 0) + (awayWon ? 3 : draw ? 1 : 0),
-      });
-    }
+      // Post updated standings (with View Results button) to results channel
+      const resultsCh = await getTargetChannel(interaction.guild, tournament.template, 'results');
+      if (resultsCh) {
+        const standingsEmbed = buildGroupStandingsEmbed(match.tournament_id);
+        const row            = buildStandingsRow(match.tournament_id);
 
-    // Post result to the correct results channel for this template
-    const updatedMatch = db.findById('matches', matchId);
-    const resultEmbed = buildResultEmbed(updatedMatch, tournament);
-
-    const resultsCh = await getTargetChannel(interaction.guild, tournament.template, 'results');
-    const postCh = resultsCh || interaction.channel;
-    await postCh.send({ embeds: [resultEmbed] });
-
-    // Post updated standings to match schedule channel
-    if (match.stage === 'group') {
-      const standingsEmbed = buildGroupStandingsEmbed(match.tournament_id);
-      if (standingsEmbed) {
-        const scheduleCh = await getTargetChannel(interaction.guild, tournament.template, 'matchSchedule') || interaction.channel;
-        await scheduleCh.send({ embeds: [standingsEmbed] });
+        // Try to edit pinned standings message; otherwise post new
+        const storedMsgId = db.getConfig(`standings_msg_${match.tournament_id}`);
+        let posted = false;
+        if (storedMsgId) {
+          try {
+            const old = await resultsCh.messages.fetch(storedMsgId);
+            await old.edit({ embeds: [standingsEmbed], components: [row] });
+            posted = true;
+          } catch (_) {}
+        }
+        if (!posted) {
+          const msg = await resultsCh.send({ embeds: [standingsEmbed], components: [row] });
+          db.setConfig(`standings_msg_${match.tournament_id}`, msg.id);
+        }
       }
     }
 
+    const home = db.get('teams').find(t => t.id === match.home_team_id) || { name: 'Home' };
+    const away = db.get('teams').find(t => t.id === match.away_team_id) || { name: 'Away' };
+
     return interaction.reply({
-      embeds: [successEmbed('Result Added',
-        `Score recorded: **${homeScore}–${awayScore}**\n` +
-        `Posted to <#${postCh.id}>`
+      embeds: [successEmbed('Result Recorded',
+        `${E.fire}  **${home.name}  ${homeScore} — ${awayScore}  ${away.name}**\nStandings updated in results channel.`
       )],
       ephemeral: true,
     });

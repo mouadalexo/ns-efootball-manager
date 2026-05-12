@@ -4,6 +4,7 @@ const { successEmbed, errorEmbed, warningEmbed } = require('../utils/embeds');
 const { buildPendingMatchesSelect, buildResultModal, buildResultEmbed } = require('../panels/resultsPanel');
 const { buildTournamentSelectMenu } = require('../panels/tournamentPanel');
 const { buildGroupStandingsEmbed } = require('../panels/standingsPanel');
+const { getTargetChannel } = require('../utils/channelRouter');
 
 async function handleResultInteraction(interaction, client) {
   const id = interaction.customId;
@@ -39,8 +40,8 @@ async function handleResultInteraction(interaction, client) {
 
     const match = db.findById('matches', matchId);
     if (!match) return interaction.reply({ embeds: [errorEmbed('Not Found', 'Match not found.')], ephemeral: true });
-    const tournament = db.findById('tournaments', match.tournament_id);
 
+    const tournament = db.findById('tournaments', match.tournament_id);
     db.update('matches', matchId, { home_score: homeScore, away_score: awayScore, status: 'played', played_at: new Date().toISOString() });
 
     if (match.stage === 'group') {
@@ -69,16 +70,30 @@ async function handleResultInteraction(interaction, client) {
       });
     }
 
+    // Post result to the correct results channel for this template
     const updatedMatch = db.findById('matches', matchId);
     const resultEmbed = buildResultEmbed(updatedMatch, tournament);
-    await interaction.channel.send({ embeds: [resultEmbed] });
 
+    const resultsCh = await getTargetChannel(interaction.guild, tournament.template, 'results');
+    const postCh = resultsCh || interaction.channel;
+    await postCh.send({ embeds: [resultEmbed] });
+
+    // Post updated standings to match schedule channel
     if (match.stage === 'group') {
       const standingsEmbed = buildGroupStandingsEmbed(match.tournament_id);
-      if (standingsEmbed) await interaction.channel.send({ embeds: [standingsEmbed] });
+      if (standingsEmbed) {
+        const scheduleCh = await getTargetChannel(interaction.guild, tournament.template, 'matchSchedule') || interaction.channel;
+        await scheduleCh.send({ embeds: [standingsEmbed] });
+      }
     }
 
-    return interaction.reply({ embeds: [successEmbed('Result Added', `Score recorded: **${homeScore}–${awayScore}**`)], ephemeral: true });
+    return interaction.reply({
+      embeds: [successEmbed('Result Added',
+        `Score recorded: **${homeScore}–${awayScore}**\n` +
+        `Posted to <#${postCh.id}>`
+      )],
+      ephemeral: true,
+    });
   }
 }
 

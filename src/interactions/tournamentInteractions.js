@@ -6,7 +6,9 @@ const {
   buildTournamentCreateModal, buildTournamentSelectMenu, TEMPLATES,
 } = require('../panels/tournamentPanel');
 const { buildGroupStandingsEmbed, buildKnockoutBracketEmbed } = require('../panels/standingsPanel');
-const { ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle } = require('discord.js');
+const { getTargetChannel } = require('../utils/channelRouter');
+const { ActionRowBuilder, StringSelectMenuBuilder, ButtonBuilder, ButtonStyle, EmbedBuilder } = require('discord.js');
+const { COLORS } = require('../utils/embeds');
 
 async function handleTournamentInteraction(interaction, client) {
   const id = interaction.customId;
@@ -36,8 +38,7 @@ async function handleTournamentInteraction(interaction, client) {
     await refreshTournamentListInChannel(interaction);
     return interaction.reply({
       embeds: [successEmbed('Tournament Created',
-        `**${tmpl?.emoji || '🏆'} ${name}** (Season ${season}) created!\n\n` +
-        `Template: \`${template}\` | Teams: \`${teamCount}\` | Group size: \`${groupSize}\`\n\nUse **Manage** to add teams.`)],
+        `**${tmpl?.emoji || '🏆'} ${name}** (Season ${season}) created!\n\nTemplate: \`${template}\` | Teams: \`${teamCount}\` | Group size: \`${groupSize}\`\n\nUse **Manage** to add teams.`)],
       ephemeral: true,
     });
   }
@@ -116,17 +117,21 @@ async function handleTournamentInteraction(interaction, client) {
     const groupSize = t.group_size || 4;
     const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
     for (let i = 0; i < shuffled.length; i++) {
-      const groupLetter = letters[Math.floor(i / groupSize)];
-      db.update('tournament_teams', shuffled[i].id, { group_name: groupLetter });
+      db.update('tournament_teams', shuffled[i].id, { group_name: letters[Math.floor(i / groupSize)] });
     }
 
     const groupEmbed = buildGroupStandingsEmbed(tournamentId);
-    return interaction.reply({ embeds: [groupEmbed || successEmbed('Groups Generated', 'Groups have been randomly generated!')], ephemeral: false });
+    // Post to match schedule channel
+    const scheduleCh = await getTargetChannel(interaction.guild, t.template, 'matchSchedule');
+    if (scheduleCh && groupEmbed) await scheduleCh.send({ embeds: [groupEmbed] });
+
+    return interaction.reply({ embeds: [groupEmbed || successEmbed('Groups Generated', 'Groups drawn!')], ephemeral: false });
   }
 
   if (id.startsWith('tmt_gen_matches_')) {
     if (!requireManager(interaction.member)) return noPermission(interaction);
     const tournamentId = parseInt(id.replace('tmt_gen_matches_', ''));
+    const t = db.findById('tournaments', tournamentId);
     const ttEntries = db.get('tournament_teams').filter(tt => tt.tournament_id === tournamentId);
 
     const groups = {};
@@ -136,17 +141,30 @@ async function handleTournamentInteraction(interaction, client) {
       groups[g].push(tt);
     }
 
-    let matchCount = 0;
+    const allMatches = [];
     for (const groupTeams of Object.values(groups)) {
       for (let i = 0; i < groupTeams.length; i++) {
         for (let j = i + 1; j < groupTeams.length; j++) {
-          db.insert('matches', { tournament_id: tournamentId, home_team_id: groupTeams[i].team_id, away_team_id: groupTeams[j].team_id, stage: 'group', round: 1, leg: 1, status: 'pending', home_score: null, away_score: null });
-          matchCount++;
+          const m = db.insert('matches', {
+            tournament_id: tournamentId,
+            home_team_id: groupTeams[i].team_id,
+            away_team_id: groupTeams[j].team_id,
+            stage: 'group', round: 1, leg: 1, status: 'pending',
+            home_score: null, away_score: null,
+          });
+          allMatches.push(m);
         }
       }
     }
 
-    return interaction.reply({ embeds: [successEmbed('Matches Generated', `Generated **${matchCount}** group stage matches.\nUse **Add Result** to enter scores.`)], ephemeral: false });
+    // Post match schedule to the template's schedule channel
+    const scheduleCh = await getTargetChannel(interaction.guild, t.template, 'matchSchedule') || interaction.channel;
+    await postMatchScheduleEmbed(scheduleCh, t, allMatches);
+
+    return interaction.reply({
+      embeds: [successEmbed('Matches Generated', `Generated **${allMatches.length}** fixtures.\nPosted to <#${scheduleCh.id}>`)],
+      ephemeral: false,
+    });
   }
 
   if (id.startsWith('tmt_start_knockout_')) {
@@ -170,6 +188,7 @@ async function handleTournamentInteraction(interaction, client) {
     const numMatches = Math.floor(shuffled.length / 2);
     const round = numMatches;
     const isFinal = numMatches === 1;
+    const t = db.findById('tournaments', tournamentId);
 
     for (let i = 0; i + 1 < shuffled.length; i += 2) {
       db.insert('matches', { tournament_id: tournamentId, home_team_id: shuffled[i], away_team_id: shuffled[i + 1], stage: 'knockout', round, leg: 1, status: 'pending', home_score: null, away_score: null });
@@ -179,8 +198,15 @@ async function handleTournamentInteraction(interaction, client) {
     }
 
     db.update('tournaments', tournamentId, { status: 'active' });
+
     const bracketEmbed = buildKnockoutBracketEmbed(tournamentId);
-    return interaction.reply({ embeds: [bracketEmbed || successEmbed('Knockout Started', 'Knockout stage generated!')], ephemeral: false });
+    const scheduleCh = await getTargetChannel(interaction.guild, t.template, 'matchSchedule') || interaction.channel;
+    if (bracketEmbed) await scheduleCh.send({ embeds: [bracketEmbed] });
+
+    return interaction.reply({
+      embeds: [bracketEmbed || successEmbed('Knockout Started', 'Knockout stage generated!')],
+      ephemeral: false,
+    });
   }
 
   if (id === 'tournament_bracket') {
@@ -188,6 +214,39 @@ async function handleTournamentInteraction(interaction, client) {
     if (!menu) return interaction.reply({ embeds: [warningEmbed('No Tournaments', 'No active tournaments found.')], ephemeral: true });
     return interaction.reply({ content: '📋 Select a tournament:', components: [menu], ephemeral: true });
   }
+}
+
+async function postMatchScheduleEmbed(channel, tournament, matches) {
+  const teams = db.get('teams');
+  const getTeam = id => teams.find(t => t.id === id) || { name: 'TBD', emoji: '⚽', short_name: '???' };
+
+  const ttEntries = db.get('tournament_teams').filter(tt => tt.tournament_id === tournament.id);
+  const groupOfTeam = {};
+  for (const tt of ttEntries) groupOfTeam[tt.team_id] = tt.group_name;
+
+  const byGroup = {};
+  for (const m of matches) {
+    const g = groupOfTeam[m.home_team_id] || 'A';
+    if (!byGroup[g]) byGroup[g] = [];
+    byGroup[g].push(m);
+  }
+
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.info)
+    .setTitle(`📅  ${tournament.name} — Match Schedule`)
+    .setDescription(`**${tournament.template}** Group Stage | ${matches.length} fixtures total`)
+    .setTimestamp();
+
+  for (const [group, gMatches] of Object.entries(byGroup).sort()) {
+    const lines = gMatches.map((m, i) => {
+      const home = getTeam(m.home_team_id);
+      const away = getTeam(m.away_team_id);
+      return `\`${String(i + 1).padStart(2, '0')}\` ${home.emoji} **${home.short_name}** vs **${away.short_name}** ${away.emoji}`;
+    });
+    embed.addFields({ name: `Group ${group}`, value: lines.join('\n'), inline: true });
+  }
+
+  await channel.send({ embeds: [embed] });
 }
 
 async function refreshTournamentListInChannel(interaction) {

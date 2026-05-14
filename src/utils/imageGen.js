@@ -8,10 +8,10 @@ const C = {
   card:     '#1E0005',
   cardAlt:  '#2A0008',
   title:    '#FFFFFF',
-  sub:      '#FF7070',
-  textMid:  '#CC5555',
-  textSub:  '#FF9999',
-  score:    '#FF1A1A',
+  sub:      '#FFFFFF',
+  textMid:  '#CCCCCC',
+  textSub:  '#AAAAAA',
+  score:    '#FFFFFF',
   border:   'rgba(200,50,50,0.35)',
   div:      'rgba(220,60,60,0.20)',
   win:      '#57F287',
@@ -194,24 +194,19 @@ async function drawTeamLogoAsync(ctx, cx, cy, rw, rh, team, isWinner) {
       const img = await loadImage(team.logo_url);
       ctx.save();
       if (isWinner) {
-        const glow = ctx.createRadialGradient(cx, cy, rw * 0.5, cx, cy, rw * 1.65);
-        glow.addColorStop(0, 'rgba(255,210,0,0.5)');
-        glow.addColorStop(1, 'rgba(255,210,0,0)');
-        crestPath(ctx, cx, cy, rw * 1.55, rh * 1.55);
-        ctx.fillStyle = glow; ctx.fill();
+        const glow = ctx.createRadialGradient(cx, cy, rw * 0.2, cx, cy, rw * 2.0);
+        glow.addColorStop(0, "rgba(255,215,0,0.50)");
+        glow.addColorStop(1, "rgba(255,215,0,0)");
+        ctx.fillStyle = glow;
+        ctx.beginPath(); ctx.arc(cx, cy, rw * 2.0, 0, Math.PI * 2); ctx.fill();
       }
-      crestPath(ctx, cx, cy, rw, rh);
-      ctx.fillStyle = '#111'; ctx.fill();
-      ctx.save();
-      crestPath(ctx, cx, cy, rw, rh);
-      ctx.clip();
-      const scale = Math.min((rw * 2 * 0.85) / img.width, (rh * 2 * 0.85) / img.height);
+      ctx.shadowColor = "rgba(0,0,0,0.75)";
+      ctx.shadowBlur = 14;
+      ctx.shadowOffsetY = 5;
+      const scale = Math.min((rw * 2) / img.width, (rh * 2) / img.height);
       const dw = img.width * scale, dh = img.height * scale;
-      ctx.drawImage(img, cx - dw / 2, cy - dh / 2 + rh * 0.04, dw, dh);
-      ctx.restore();
-      crestPath(ctx, cx, cy, rw, rh);
-      ctx.strokeStyle = isWinner ? '#FFD700' : 'rgba(255,255,255,0.55)';
-      ctx.lineWidth = Math.max(2, rw * 0.05); ctx.stroke();
+      ctx.drawImage(img, cx - dw / 2, cy - dh / 2, dw, dh);
+      ctx.shadowColor = "transparent"; ctx.shadowBlur = 0; ctx.shadowOffsetY = 0;
       ctx.restore();
       return;
     } catch (_) {}
@@ -292,29 +287,27 @@ function drawPortraitHeader(ctx, W, titleText, subtitleText, titleY = 148, subY 
 
 // ─── 1. Schedule image — dark red portrait 1080px ────────────────────────────
 async function generateScheduleImage(roundNum, totalRounds, matchesByGroup, teams, tournament) {
-  const getTeam = id => (Array.isArray(teams) ? teams.find(t => t.id === id) : teams[id]) || { name: "TBD", short_name: "TBD", emoji: "⚽" };
+  const getTeam = id => (Array.isArray(teams) ? teams.find(t => t.id === id) : teams[id]) || { name: "TBD", short_name: "TBD", emoji: "X" };
   const allMatches = [];
   for (const [, ms] of Object.entries(matchesByGroup).sort()) for (const m of ms) allMatches.push(m);
 
-  const W = 1080;
+  const W     = 1080;
   const HDR_H = 274;
-  const ROW_H = 104;
   const FOOT_H = 80;
-  const BAND = 210;
-  const cardX = BAND + 8, cardW = W - (BAND + 8) * 2;
-  const H = HDR_H + allMatches.length * ROW_H + FOOT_H + 20;
-  const CRW = 27, CRH = 33;
+  const BAND   = 210;
+  const cardX  = BAND + 8, cardW = W - (BAND + 8) * 2;
+  const n = allMatches.length || 1;
+  const ROW_H = n <= 3 ? 130 : n <= 5 ? 112 : n <= 8 ? 96 : 82;
+  const CRW = Math.round(ROW_H * 0.32), CRH = Math.round(ROW_H * 0.38);
+  const H = HDR_H + n * ROW_H + FOOT_H + 20;
 
   const canvas = createCanvas(W, H);
-  const ctx = canvas.getContext('2d');
-
+  const ctx = canvas.getContext("2d");
   drawPortraitBg(ctx, W, H);
-  drawPortraitHeader(ctx, W, 'SCHEDULE',
-    `ROUND ${roundNum} OF ${totalRounds}  —  ${tournament.name.toUpperCase()}`);
+  drawPortraitHeader(ctx, W, "SCHEDULE",
+    "ROUND " + roundNum + " OF " + totalRounds + "  —  " + tournament.name.toUpperCase());
 
-  // Card backing
-  rr(ctx, cardX, HDR_H - 8, cardW, allMatches.length * ROW_H + 16, 18, C.card);
-
+  rr(ctx, cardX, HDR_H - 8, cardW, n * ROW_H + 16, 18, C.card);
   const MID_X = W / 2;
 
   for (let i = 0; i < allMatches.length; i++) {
@@ -324,61 +317,49 @@ async function generateScheduleImage(roundNum, totalRounds, matchesByGroup, team
     const rowY = HDR_H + i * ROW_H;
     const midY = rowY + ROW_H / 2;
 
-    if (i % 2 === 1) {
-      ctx.fillStyle = C.cardAlt;
-      ctx.fillRect(cardX + 1, rowY, cardW - 2, ROW_H);
+    if (i % 2 === 1) { ctx.fillStyle = C.cardAlt; ctx.fillRect(cardX + 1, rowY, cardW - 2, ROW_H); }
+
+    if (m.group_name) {
+      ctx.fillStyle = "rgba(255,255,255,0.28)";
+      ctx.font = "bold 11px 'DejaVu Sans', Arial, sans-serif";
+      ctx.textAlign = "left";
+      ctx.fillText("GRP " + m.group_name, cardX + 14, rowY + 16);
     }
 
-    // Match index + group tag
-    ctx.fillStyle = C.textMid;
-    ctx.font = '13px "DejaVu Sans", Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText(`${String(i + 1).padStart(2, '0')}${m.group_name ? `  GRP ${m.group_name}` : ''}`, cardX + 14, midY + 5);
-
-    // HOME: name right-aligned → crest
-    const homeCX = MID_X - 140;
+    const homeCX = MID_X - 148;
     await drawTeamLogoAsync(ctx, homeCX, midY, CRW, CRH, home, false);
-    ctx.fillStyle = C.title;
-    ctx.font = 'bold 19px "DejaVu Sans", Arial, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText((home.name || 'TBD').toUpperCase().slice(0, 14), homeCX - CRW - 12, midY + 7);
+    ctx.fillStyle = "#FFFFFF";
+    const hLen = (home.name || "").length;
+    ctx.font = "bold " + (hLen > 13 ? 16 : hLen > 9 ? 19 : 22) + "px 'DejaVu Sans', Arial, sans-serif";
+    ctx.textAlign = "right";
+    ctx.fillText((home.name || "TBD").toUpperCase().slice(0, 15), homeCX - CRW - 10, midY + 7);
 
-    // VS
-    ctx.fillStyle = C.score;
-    ctx.font = 'bold 30px "DejaVu Sans", Arial, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.fillText('VS', MID_X, midY + 10);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = "bold " + Math.round(ROW_H * 0.26) + "px 'DejaVu Sans', Arial, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("VS", MID_X, midY + 10);
 
-    // AWAY: crest → name left-aligned
-    const awayCX = MID_X + 140;
+    const awayCX = MID_X + 148;
     await drawTeamLogoAsync(ctx, awayCX, midY, CRW, CRH, away, false);
-    ctx.fillStyle = C.title;
-    ctx.font = 'bold 19px "DejaVu Sans", Arial, sans-serif';
-    ctx.textAlign = 'left';
-    ctx.fillText((away.name || 'TBD').toUpperCase().slice(0, 14), awayCX + CRW + 12, midY + 7);
+    ctx.fillStyle = "#FFFFFF";
+    const aLen = (away.name || "").length;
+    ctx.font = "bold " + (aLen > 13 ? 16 : aLen > 9 ? 19 : 22) + "px 'DejaVu Sans', Arial, sans-serif";
+    ctx.textAlign = "left";
+    ctx.fillText((away.name || "TBD").toUpperCase().slice(0, 15), awayCX + CRW + 10, midY + 7);
 
-    // Row divider
     if (i < allMatches.length - 1) {
-      ctx.strokeStyle = C.div;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(cardX + 22, rowY + ROW_H);
-      ctx.lineTo(cardX + cardW - 22, rowY + ROW_H);
-      ctx.stroke();
+      ctx.strokeStyle = C.div; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(cardX + 22, rowY + ROW_H); ctx.lineTo(cardX + cardW - 22, rowY + ROW_H); ctx.stroke();
     }
   }
 
-  // Footer
-  ctx.fillStyle = C.textMid;
-  ctx.font = '15px "DejaVu Sans", Arial, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.fillText(tournament.name + '  —  NS eFootball Tournament', W / 2, HDR_H + allMatches.length * ROW_H + 46);
-
-  // Bottom accent
-  ctx.fillStyle = '#8B0000';
+  ctx.fillStyle = "#CCCCCC";
+  ctx.font = "15px 'DejaVu Sans', Arial, sans-serif";
+  ctx.textAlign = "center";
+  ctx.fillText("Night Stars  —  " + tournament.name, W / 2, HDR_H + n * ROW_H + 46);
+  ctx.fillStyle = "#8B0000";
   ctx.fillRect(0, H - 8, W, 8);
-
-  return canvas.toBuffer('image/png');
+  return canvas.toBuffer("image/png");
 }
 
 // ─── 2. Result image — dark red portrait 1080×1350 ───────────────────────────
@@ -514,7 +495,7 @@ async function generateResultImage(match, homeTeam, awayTeam, tournament) {
   ctx.fillStyle = C.textMid;
   ctx.font = '17px "DejaVu Sans", Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(`${tournament.name}  —  NS eFootball Tournament`, MID_X, H - 48);
+  ctx.fillText(`${tournament.name}  —  Night Stars`, MID_X, H - 48);
 
   // Bottom accent bar
   ctx.fillStyle = '#8B0000';
@@ -592,7 +573,7 @@ function generateKnockoutBracket(tournament, matches, teams) {
   });
 
   ctx.fillStyle = bgK.textMid; ctx.font = '11px "DejaVu Sans", Arial, sans-serif';
-  ctx.textAlign = 'center'; ctx.fillText('eFootball NS Tournament', W / 2, H - 8);
+  ctx.textAlign = 'center'; ctx.fillText('Night Stars', W / 2, H - 8);
   return canvas.toBuffer('image/png');
 }
 
@@ -673,7 +654,7 @@ function generateRosterImage(tournament, groupedRoster) {
   });
 
   ctx.fillStyle = C.uclSub; ctx.font = '13px "DejaVu Sans", Arial, sans-serif';
-  ctx.textAlign = 'center'; ctx.fillText(`NS eFootball Tournament  —  ${tournament.name}`, W / 2, H - 14);
+  ctx.textAlign = 'center'; ctx.fillText(`Night Stars  —  ${tournament.name}`, W / 2, H - 14);
   return canvas.toBuffer('image/png');
 }
 
@@ -810,7 +791,7 @@ function generateStandingsImage(tournament, groupedStandings) {
   ctx.fillStyle = C.textMid;
   ctx.font = '15px "DejaVu Sans", Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText('NS eFootball Tournament  —  ' + tournament.name, W / 2, H - 38);
+  ctx.fillText('Night Stars  —  ' + tournament.name, W / 2, H - 38);
 
   // Bottom accent
   ctx.fillStyle = '#8B0000';
@@ -879,7 +860,7 @@ function generateGroupDrawImage(tournament, groupedTeams) {
 
   ctx.fillStyle = C.uclSub; ctx.font = '13px "DejaVu Sans", Arial, sans-serif';
   ctx.textAlign = 'center';
-  ctx.fillText(`NS eFootball Tournament  —  ${tournament.name}`, W / 2, H - FOOTER_H + 16);
+  ctx.fillText(`Night Stars  —  ${tournament.name}`, W / 2, H - FOOTER_H + 16);
   return canvas.toBuffer('image/png');
 }
 

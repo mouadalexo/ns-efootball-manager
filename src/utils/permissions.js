@@ -1,6 +1,7 @@
 const { PermissionFlagsBits } = require('discord.js');
 
 function isManager(member) {
+  if (!member) return false;
   return (
     member.permissions.has(PermissionFlagsBits.ManageGuild) ||
     member.permissions.has(PermissionFlagsBits.Administrator) ||
@@ -12,11 +13,8 @@ function isManager(member) {
   );
 }
 
-function requireManager(interaction) {
-  if (!isManager(interaction.member)) {
-    return false;
-  }
-  return true;
+function requireManager(member) {
+  return isManager(member);
 }
 
 module.exports = { isManager, requireManager };

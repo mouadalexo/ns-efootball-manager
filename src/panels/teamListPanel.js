@@ -3,8 +3,69 @@ const {
   StringSelectMenuBuilder, ModalBuilder, TextInputBuilder, TextInputStyle,
 } = require('discord.js');
 const { db } = require('../utils/database');
-const { COLORS } = require('../utils/embeds');
+const { COLORS, E } = require('../utils/embeds');
 
+// ─── Roster embed: players → teams (for a specific tournament) ────────────────
+function buildRosterEmbed(tournamentId) {
+  const tournament = db.findById('tournaments', tournamentId);
+  if (!tournament) return buildTeamListEmbed(); // fallback
+
+  const ttRows  = db.get('tournament_teams').filter(tt => tt.tournament_id === tournamentId);
+  const teams   = db.get('teams');
+  const players = db.get('players');
+
+  // Group teams by group_name
+  const groups = {};
+  for (const tt of ttRows) {
+    const g = tt.group_name || 'A';
+    if (!groups[g]) groups[g] = [];
+    const team = teams.find(t => t.id === tt.team_id) || { name: 'Unknown', emoji: '⚽', short_name: '???' };
+    const teamPlayers = players.filter(p => p.team_id === tt.team_id);
+    groups[g].push({ team, players: teamPlayers });
+  }
+
+  const totalPlayers = players.filter(p =>
+    ttRows.some(tt => tt.team_id === p.team_id)
+  ).length;
+  const totalTeams = ttRows.length;
+
+  const embed = new EmbedBuilder()
+    .setColor(COLORS.primary)
+    .setTitle(`${E.cup}  ${tournament.name}  —  Player Roster`)
+    .setDescription(
+      `${E.smallarrow} **${totalTeams} teams**  ·  **${totalPlayers} players**  enrolled\n` +
+      `${'━'.repeat(34)}`
+    )
+    .setTimestamp();
+
+  for (const [groupName, groupTeams] of Object.entries(groups).sort()) {
+    const lines = groupTeams.map(({ team, players: tp }) => {
+      const emoji    = team.emoji || '⚽';
+      const name     = team.name.slice(0, 18);
+      const shortTag = `\`${team.short_name}\``;
+
+      let playerStr;
+      if (tp.length === 0) {
+        playerStr = '`No players assigned`';
+      } else {
+        playerStr = tp.map(p => `**${p.discord_username || 'Unknown'}**`).join(' · ');
+      }
+
+      return `${E.smallarrow} ${emoji} ${name} ${shortTag}\n⠀⠀⠀👤 ${playerStr}`;
+    });
+
+    embed.addFields({
+      name: `${E.hashtag}  GROUP ${groupName}`,
+      value: ' ' + lines.join('\n\n'),
+      inline: false,
+    });
+  }
+
+  embed.setFooter({ text: `${tournament.template}  •  Season ${tournament.season}  •  Group Stage` });
+  return embed;
+}
+
+// ─── Admin team database embed (unchanged) ───────────────────────────────────
 function buildTeamListEmbed() {
   const teams = db.get('teams').sort((a, b) => {
     if (a.category !== b.category) return a.category.localeCompare(b.category);
@@ -16,32 +77,30 @@ function buildTeamListEmbed() {
   for (const t of teams) {
     const playerCount = players.filter(p => p.team_id === t.id).length;
     const cat = categories[t.category] || categories.custom;
-    const playerLine = playerCount > 0 ? ` *(${playerCount}p)*` : '';
-    cat.push(`${t.emoji} **${t.name}** \`${t.short_name}\`${playerLine}`);
+    const playerLine = playerCount > 0 ? `  *(${playerCount}p)*` : '';
+    cat.push(`${E.smallarrow} ${t.emoji} **${t.name}** \`${t.short_name}\`${playerLine}`);
+  }
+
+  function fieldValue(lines) {
+    if (!lines.length) return '`empty`';
+    return [' ' + lines[0], ...lines.slice(1)].join('\n');
   }
 
   const embed = new EmbedBuilder()
     .setColor(COLORS.primary)
     .setTitle('🏟️  NS eFootball — Team Database')
-    .setDescription('All registered teams and their players.')
+    .setDescription('All registered teams available in the bot.')
     .setTimestamp();
 
   if (categories.international.length) {
-    // Split into chunks of 20 per field (Discord field limit)
-    const chunks = chunkArray(categories.international, 20);
+    const chunks = chunkArray(categories.international, 10);
     chunks.forEach((chunk, i) => {
-      embed.addFields({ name: i === 0 ? '🌍 International Clubs' : '🌍 International (cont.)', value: chunk.join('\n'), inline: false });
+      embed.addFields({ name: i === 0 ? '🌍 International Clubs' : '🌍 International (cont.)', value: fieldValue(chunk), inline: false });
     });
   }
-  if (categories.morocco.length) {
-    embed.addFields({ name: '🇲🇦 Moroccan Clubs', value: categories.morocco.join('\n'), inline: false });
-  }
-  if (categories.saudi.length) {
-    embed.addFields({ name: '🇸🇦 Saudi Clubs', value: categories.saudi.join('\n'), inline: false });
-  }
-  if (categories.custom.length) {
-    embed.addFields({ name: '⚙️ Custom Teams', value: categories.custom.join('\n'), inline: false });
-  }
+  if (categories.morocco.length) embed.addFields({ name: '🇲🇦 Moroccan Clubs', value: fieldValue(categories.morocco), inline: false });
+  if (categories.saudi.length)   embed.addFields({ name: '🇸🇦 Saudi Clubs',    value: fieldValue(categories.saudi),   inline: false });
+  if (categories.custom.length)  embed.addFields({ name: '⚙️ Custom Teams',     value: fieldValue(categories.custom),  inline: false });
 
   embed.setFooter({ text: `${teams.length} teams registered` });
   return embed;
@@ -111,4 +170,4 @@ function buildCustomTeamModal() {
     );
 }
 
-module.exports = { buildTeamListEmbed, buildTeamManageButtons, buildTeamSelectMenu, buildAddPlayerModal, buildCustomTeamModal };
+module.exports = { buildRosterEmbed, buildTeamListEmbed, buildTeamManageButtons, buildTeamSelectMenu, buildAddPlayerModal, buildCustomTeamModal };

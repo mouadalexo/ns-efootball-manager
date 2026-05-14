@@ -1,15 +1,19 @@
+'use strict';
 const { db } = require('../utils/database');
 const { requireManager } = require('../utils/permissions');
 const { successEmbed, errorEmbed, warningEmbed, E } = require('../utils/embeds');
 const { buildPendingMatchesSelect, buildResultModal, buildAllResultsEmbed } = require('../panels/resultsPanel');
 const { buildTournamentSelectMenu } = require('../panels/tournamentPanel');
-const { buildGroupStandingsEmbed, buildStandingsRow } = require('../panels/standingsPanel');
+const { AttachmentBuilder } = require('discord.js');
 const { getTargetChannel } = require('../utils/channelRouter');
+const { generateResultImage } = require('../utils/imageGen');
+const { ensureTeamLogo } = require('../utils/logoFetcher');
+const { postResultAndNextRound } = require('./manageInteractions');
 
 async function handleResultInteraction(interaction, client) {
   const id = interaction.customId;
 
-  // ── View All Results button (ephemeral) ────────────────────────────────────
+  // ── View All Results button ────────────────────────────────────────────────
   if (id.startsWith('view_results_')) {
     const tournamentId = parseInt(id.replace('view_results_', ''));
     const embed = buildAllResultsEmbed(tournamentId);
@@ -17,7 +21,7 @@ async function handleResultInteraction(interaction, client) {
     return interaction.reply({ embeds: [embed], ephemeral: true });
   }
 
-  // ── Select tournament to add result ───────────────────────────────────────
+  // ── Select tournament to add result (old panel path) ───────────────────────
   if (id === 'tournament_results') {
     if (!requireManager(interaction.member)) return noPermission(interaction);
     const menu = buildTournamentSelectMenu('Select a tournament to add result...', 'result_tournament_select');
@@ -53,7 +57,11 @@ async function handleResultInteraction(interaction, client) {
     if (!match) return interaction.reply({ embeds: [errorEmbed('Not Found', 'Match not found.')], ephemeral: true });
 
     const tournament = db.findById('tournaments', match.tournament_id);
+    const teams      = db.get('teams');
+    const homeTeam   = teams.find(t => t.id === match.home_team_id) || { name: 'Home', short_name: 'HOM' };
+    const awayTeam   = teams.find(t => t.id === match.away_team_id) || { name: 'Away', short_name: 'AWY' };
 
+    // Save result
     db.update('matches', matchId, {
       home_score: homeScore,
       away_score: awayScore,
@@ -61,7 +69,7 @@ async function handleResultInteraction(interaction, client) {
       played_at: new Date().toISOString(),
     });
 
-    // Update tournament_teams standings
+    // Update group standings
     if (match.stage === 'group') {
       const homeWon = homeScore > awayScore;
       const awayWon = awayScore > homeScore;
@@ -81,36 +89,35 @@ async function handleResultInteraction(interaction, client) {
           points:        (tt.points        || 0) + (won ? 3 : draw ? 1 : 0),
         });
       }
-
-      // Post updated standings (with View Results button) to results channel
-      const resultsCh = await getTargetChannel(interaction.guild, tournament.template, 'results');
-      if (resultsCh) {
-        const standingsEmbed = buildGroupStandingsEmbed(match.tournament_id);
-        const row            = buildStandingsRow(match.tournament_id);
-
-        // Try to edit pinned standings message; otherwise post new
-        const storedMsgId = db.getConfig(`standings_msg_${match.tournament_id}`);
-        let posted = false;
-        if (storedMsgId) {
-          try {
-            const old = await resultsCh.messages.fetch(storedMsgId);
-            await old.edit({ embeds: [standingsEmbed], components: [row] });
-            posted = true;
-          } catch (_) {}
-        }
-        if (!posted) {
-          const msg = await resultsCh.send({ embeds: [standingsEmbed], components: [row] });
-          db.setConfig(`standings_msg_${match.tournament_id}`, msg.id);
-        }
-      }
     }
 
-    const home = db.get('teams').find(t => t.id === match.home_team_id) || { name: 'Home' };
-    const away = db.get('teams').find(t => t.id === match.away_team_id) || { name: 'Away' };
+    // Re-fetch match with updated scores for image generation
+    const updatedMatch = db.findById('matches', matchId);
+
+    // Post result image to results channel
+    const resultsCh = await getTargetChannel(interaction.guild, tournament.template, 'results');
+    if (resultsCh) {
+      try {
+        await ensureTeamLogo(homeTeam);
+        await ensureTeamLogo(awayTeam);
+        const resBuf = await generateResultImage(updatedMatch, homeTeam, awayTeam, tournament);
+        await resultsCh.send({ files: [new AttachmentBuilder(resBuf, { name: 'result.png' })] });
+      } catch (e) { console.error('[ResultImage]', e.message); }
+    }
+
+    // Post standings + next round schedule (non-blocking, won't block reply)
+    postResultAndNextRound(interaction.guild, updatedMatch, tournament, homeTeam, awayTeam, client)
+      .catch(e => console.error('[PostResultAndNextRound]', e.message));
+
+    const resultLabel = homeScore > awayScore
+      ? `${E.fire} **${homeTeam.name}  ${homeScore} — ${awayScore}  ${awayTeam.name}**`
+      : awayScore > homeScore
+      ? `${E.fire} **${homeTeam.name}  ${homeScore} — ${awayScore}  ${awayTeam.name}**`
+      : `🤝 **${homeTeam.name}  ${homeScore} — ${awayScore}  ${awayTeam.name}** *(Draw)*`;
 
     return interaction.reply({
       embeds: [successEmbed('Result Recorded',
-        `${E.fire}  **${home.name}  ${homeScore} — ${awayScore}  ${away.name}**\nStandings updated in results channel.`
+        `${resultLabel}\n\nResult image + standings posted to results channel.`
       )],
       ephemeral: true,
     });

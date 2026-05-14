@@ -25,32 +25,48 @@ function buildGroupStandingsEmbed(tournamentId) {
     groups[g].sort((a, b) => {
       const pd = (b.points || 0) - (a.points || 0);
       if (pd !== 0) return pd;
-      return ((b.goals_for || 0) - (b.goals_against || 0)) - ((a.goals_for || 0) - (a.goals_against || 0));
+      const gdA = (a.goals_for || 0) - (a.goals_against || 0);
+      const gdB = (b.goals_for || 0) - (b.goals_against || 0);
+      return gdB - gdA;
     });
   }
 
   const embed = new EmbedBuilder()
-    .setColor(COLORS.primary)
+    .setColor(COLORS.gold)
     .setTitle(`${E.cup}  ${tournament.name}  —  Group Standings`)
-    .setDescription(`✅  Top 2 advance to Knockout Stage     ❌  Eliminated`)
+    .setDescription(
+      `${E.yeaaaah}  **Top 2 from each group advance to Knockout Stage**\n` +
+      `━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━`
+    )
     .setTimestamp();
 
   for (const [groupName, gTeams] of Object.entries(groups).sort()) {
-    const lines = gTeams.map((t, i) => {
+    // Column header line (monospace so it reads like a table header)
+    const header = '`  #   NAME                  P    DIF   PTS`';
+
+    const teamLines = gTeams.map((t, i) => {
+      const mp    = (t.wins || 0) + (t.draws || 0) + (t.losses || 0);
       const gd    = (t.goals_for || 0) - (t.goals_against || 0);
       const gdStr = (gd >= 0 ? '+' : '') + gd;
-      const qual  = i < 2 ? '✅' : '❌';
       const pts   = t.points || 0;
-      const w = t.wins || 0, d = t.draws || 0, l = t.losses || 0;
-      return `${qual}  **${i + 1}.  ${t.name || 'Unknown'}**\n　　\`${pts} pts\`  ·  ${w}W  ${d}D  ${l}L  ·  GD  \`${gdStr}\``;
+      const qual  = i < 2 ? '🟢' : '🔴';
+      const emoji = t.emoji || '⚽';
+      const name  = (t.name || 'Unknown').slice(0, 20);
+
+      return (
+        `${qual} \`${i + 1}\` ${emoji} **${name}**\n` +
+        `⠀⠀⠀⠀\`P: ${String(mp).padStart(2)}  Dif: ${gdStr.padStart(3)}  Pts: ${String(pts).padStart(3)}\``
+      );
     });
+
     embed.addFields({
       name: `${E.hashtag}  GROUP ${groupName}`,
-      value: lines.join('\n\n'),
+      value: header + '\n' + teamLines.join('\n'),
       inline: false,
     });
   }
 
+  embed.setFooter({ text: `${tournament.template}  •  Group Stage` });
   return embed;
 }
 
@@ -88,15 +104,19 @@ function buildKnockoutBracketEmbed(tournamentId) {
     rounds[m.round].push(m);
   }
 
-  const roundNames = { 1: 'Final', 2: 'Semi-Finals', 4: 'Quarter-Finals', 8: 'Round of 16' };
+  const roundNames = { 1: '🏆 Final', 2: '🥈 Semi-Finals', 4: '🏅 Quarter-Finals', 8: '🔵 Round of 16' };
 
   for (const [round, rMatches] of Object.entries(rounds).sort((a, b) => b[0] - a[0])) {
     const label = roundNames[round] || `Round ${round}`;
     const lines = rMatches.map(m => {
-      const home  = getTeam(m.home_team_id);
-      const away  = getTeam(m.away_team_id);
-      const score = m.status === 'played' ? `  **${m.home_score} — ${m.away_score}**` : '  *(pending)*';
-      return `${E.arrow}  **${home.name}**  vs  **${away.name}**${score}`;
+      const home    = getTeam(m.home_team_id);
+      const away    = getTeam(m.away_team_id);
+      const score   = m.status === 'played' ? `\`${m.home_score} — ${m.away_score}\`` : '`? — ?`';
+      const homeWon = m.status === 'played' && m.home_score > m.away_score;
+      const awayWon = m.status === 'played' && m.away_score > m.home_score;
+      const h = homeWon ? `${E.crown} **${home.name}**` : `**${home.name}**`;
+      const a = awayWon ? `**${away.name}** ${E.crown}` : `**${away.name}**`;
+      return `${E.arrow}  ${h}  ${score}  ${a}`;
     });
     embed.addFields({ name: `${E.channel}  ${label}`, value: lines.join('\n'), inline: false });
   }
